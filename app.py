@@ -8,12 +8,12 @@ GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 MAX_PRODUCT_PHOTOS = 7
 
 
-def initialize_state():
+def init_state():
     defaults = {
         "product_photos": [],
         "brief": "",
+        "image_prompt_result": "",
         "generated_image_bytes": None,
-        "generated_image_type": "image/png",
         "selected_image_bytes": None,
         "selected_image_name": "",
         "selected_image_type": "image/png",
@@ -23,33 +23,38 @@ def initialize_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-    # Backward compatibility with the previous single-photo state.
-    if not st.session_state.product_photos and st.session_state.get("product_photo_bytes"):
-        st.session_state.product_photos = [{
-            "bytes": st.session_state.product_photo_bytes,
-            "name": st.session_state.get("product_photo_name", "product.png"),
-            "type": st.session_state.get("product_photo_type", "image/png"),
-        }]
+
+def reset_downstream():
+    st.session_state.image_prompt_result = ""
+    st.session_state.generated_image_bytes = None
+    st.session_state.selected_image_bytes = None
+    st.session_state.selected_image_name = ""
+    st.session_state.selected_image_type = "image/png"
+    st.session_state.video_prompt_result = ""
 
 
-def save_product_photos(uploaded_files):
+def save_product_photos(files):
     photos = []
-    for uploaded_file in uploaded_files or []:
-        data = uploaded_file.getvalue()
+    for uploaded in (files or [])[:MAX_PRODUCT_PHOTOS]:
+        data = uploaded.getvalue()
         if data:
-            photos.append({
-                "bytes": data,
-                "name": uploaded_file.name,
-                "type": uploaded_file.type or "image/png",
-            })
-
-    photos = photos[:MAX_PRODUCT_PHOTOS]
+            photos.append(
+                {
+                    "bytes": data,
+                    "name": uploaded.name,
+                    "type": uploaded.type or "image/png",
+                }
+            )
     if photos != st.session_state.product_photos:
         st.session_state.product_photos = photos
-        st.session_state.generated_image_bytes = None
-        st.session_state.selected_image_bytes = None
-        st.session_state.selected_image_name = ""
-        st.session_state.video_prompt_result = ""
+        reset_downstream()
+
+
+def make_client(api_key):
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("Google Gemini API Key belum diisi.")
+    return genai.Client(api_key=key)
 
 
 def get_ratio(label):
@@ -60,24 +65,18 @@ def get_ratio(label):
     }.get(label, "9:16")
 
 
-def make_client(api_key):
-    key = (api_key or "").strip()
-    if not key:
-        raise ValueError("Google Gemini API Key belum diisi.")
-    return genai.Client(api_key=key)
-
-
-def generate_gemini_text(api_key, prompt, image_bytes=None, mime_type="image/png"):
+def gemini_text(api_key, prompt, photos=None):
     client = make_client(api_key)
-    if image_bytes:
-        input_data = [
-            {"type": "text", "text": prompt},
-            {
-                "type": "image",
-                "data": base64.b64encode(image_bytes).decode("utf-8"),
-                "mime_type": mime_type or "image/png",
-            },
-        ]
+    if photos:
+        input_data = [{"type": "text", "text": prompt}]
+        for photo in photos[:MAX_PRODUCT_PHOTOS]:
+            input_data.append(
+                {
+                    "type": "image",
+                    "data": base64.b64encode(photo["bytes"]).decode("utf-8"),
+                    "mime_type": photo["type"] or "image/png",
+                }
+            )
     else:
         input_data = prompt
 
@@ -91,44 +90,52 @@ def generate_gemini_text(api_key, prompt, image_bytes=None, mime_type="image/png
     return text
 
 
-def generate_gemini_image(api_key, prompt, product_photos, aspect_ratio):
-    if not product_photos:
+def gemini_image(api_key, prompt, photos, aspect_ratio):
+    if not photos:
         raise ValueError("Minimal satu foto produk diperlukan.")
 
     client = make_client(api_key)
-    ratio = get_ratio(aspect_ratio)
-    input_data = [
-        {"type": "text", "text": prompt},
-    ]
-    for photo in product_photos[:MAX_PRODUCT_PHOTOS]:
-        input_data.append({
-            "type": "image",
-            "data": base64.b64encode(photo["bytes"]).decode("utf-8"),
-            "mime_type": photo["type"] or "image/png",
-        })
+    input_data = [{"type": "text", "text": prompt}]
+    for photo in photos[:MAX_PRODUCT_PHOTOS]:
+        input_data.append(
+            {
+                "type": "image",
+                "data": base64.b64encode(photo["bytes"]).decode("utf-8"),
+                "mime_type": photo["type"] or "image/png",
+            }
+        )
 
-    # IMPORTANT: Gemini image generation through Interactions API uses
-    # response_format={"type":"image", ...}. The previous code sent
-    # response_format={"image": {...}} to GenerateContentConfig, which is
-    # rejected by Pydantic as an extra/forbidden field.
     interaction = client.interactions.create(
         model=GEMINI_IMAGE_MODEL,
         input=input_data,
         response_format={
             "type": "image",
-            "aspect_ratio": ratio,
+            "aspect_ratio": get_ratio(aspect_ratio),
             "image_size": "1K",
         },
     )
-
     output_image = getattr(interaction, "output_image", None)
     data = getattr(output_image, "data", None) if output_image else None
     if not data:
-        raise RuntimeError("Gemini tidak mengembalikan gambar. Coba lagi dengan foto/brief yang lebih jelas.")
+        raise RuntimeError("Gemini tidak mengembalikan gambar.")
+    return base64.b64decode(data) if isinstance(data, str) else data
 
-    if isinstance(data, str):
-        return base64.b64decode(data)
-    return data
+
+def friendly_error(exc, stage):
+    message = str(exc)
+    lower = message.lower()
+    if "429" in lower or "quota" in lower or "resource_exhausted" in lower:
+        if stage == "image":
+            return (
+                "Quota Gemini untuk model gambar sedang tidak tersedia (error 429 / limit 0). "
+                "Ini bukan kerusakan alur aplikasi. Gunakan mode Google Flow untuk membuat prompt gambar, "
+                "lalu upload hasil Google Flow ke tahap berikutnya. Jika ingin gambar dibuat langsung di aplikasi, "
+                "API project harus memiliki akses/quota untuk model image."
+            )
+        return "Quota Gemini sedang terbatas. Tunggu beberapa saat atau gunakan project/API key dengan quota yang tersedia."
+    if "api key" in lower or "permission" in lower or "unauthenticated" in lower:
+        return "API key tidak valid atau tidak memiliki izin untuk model yang dipilih. Periksa project Gemini API."
+    return f"Gagal pada tahap {stage}: {message}"
 
 
 st.set_page_config(
@@ -137,28 +144,22 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed",
 )
-initialize_state()
+init_state()
 
 st.markdown(
     """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-:root{--bg:#0b0b0f;--surface:#17171c;--border:#2b2b32;--text:#f5f5f7;--muted:#a7a7b0;}
+:root{--bg:#0b0b0f;--surface:#17171c;--surface2:#121217;--border:#2b2b32;--text:#f5f5f7;--muted:#a7a7b0;--accent:#8b6cff}
 html,body,[class*="css"]{font-family:Inter,system-ui,sans-serif}.stApp{background:var(--bg);color:var(--text)}
 .block-container{max-width:760px;padding:0 14px 110px}.stApp>header{background:transparent}[data-testid="stToolbar"]{display:none}
-.cf-topbar{position:sticky;top:0;z-index:20;margin:0 -14px;padding:12px 14px 10px;background:rgba(11,11,15,.94);backdrop-filter:blur(18px);border-bottom:1px solid #1c1c21;display:flex;align-items:center;justify-content:space-between}
-.cf-title{font-size:17px;font-weight:700}.cf-subtitle{font-size:11px;color:var(--muted);margin-top:2px}.cf-menu{font-size:20px;color:#d9d9df}
-.cf-welcome{text-align:center;padding:28px 12px 22px}.cf-logo{width:48px;height:48px;margin:0 auto 12px;border-radius:16px;display:grid;place-items:center;background:#fff;color:#111;font-size:24px}.cf-welcome h1{font-size:26px;margin:0 0 7px;letter-spacing:-.7px}.cf-welcome p{color:var(--muted);font-size:13px;margin:0}
-.cf-stepbar{display:flex;gap:7px;overflow-x:auto;padding:2px 0 12px;scrollbar-width:none}.cf-step{white-space:nowrap;padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:#131318;color:#9e9ea7;font-size:11px}.cf-step.active{color:#fff;border-color:#5f47a7;background:#211a34}
-.cf-bubble{background:var(--surface);border:1px solid #24242a;border-radius:18px;padding:15px;margin:10px 0 14px}.cf-label{font-size:12px;font-weight:700;color:#c9c9d0;margin-bottom:8px}.cf-muted{color:var(--muted);font-size:12px;line-height:1.5}.cf-count{float:right;color:#9d8bea}
-[data-testid="stFileUploader"]{background:transparent;border:0;padding:0}.stFileUploader>div{border:0}.stFileUploader section{background:#121217;border:1px dashed #41414a;border-radius:17px}
-[data-testid="stFileUploaderDropzone"]{min-height:105px;border:1px dashed #41414a;border-radius:17px;background:#121217}
-[data-testid="stTextArea"] textarea,[data-testid="stTextInput"] input,[data-testid="stSelectbox"] div[data-baseweb="select"]>div{background:#17171c!important;color:#f5f5f7!important;border:1px solid #2b2b32!important;border-radius:16px!important}label{color:#c9c9d0!important;font-size:12px!important;font-weight:600!important}
-[data-testid="stTextArea"] textarea{min-height:120px}.stButton>button,.stDownloadButton>button{min-height:48px;border-radius:15px!important;background:#202027!important;color:#f5f5f7!important;border:1px solid #34343c!important;font-weight:700!important}.stButton>button[kind="primary"]{background:#fff!important;color:#111!important;border-color:#fff!important}
-[data-testid="stImage"]{border-radius:16px;overflow:hidden;border:1px solid #292930}.stAlert{border-radius:15px}.stExpander{background:#15151a;border:1px solid #292930;border-radius:16px}
-.cf-photo-card{background:#121217;border:1px solid #292930;border-radius:16px;padding:8px;height:100%}.cf-photo-name{font-size:10px;color:#aaaab3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 2px 1px}
-.cf-composer{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:min(760px,100%);padding:9px 14px 12px;background:linear-gradient(transparent,#0b0b0f 22%);z-index:15;pointer-events:none}.cf-composer>div{pointer-events:auto;background:#17171c;border:1px solid #34343c;border-radius:20px;padding:8px 12px;color:#8f8f98;font-size:11px;text-align:center}
-@media(max-width:600px){.block-container{padding:0 12px 105px}.cf-topbar{margin:0 -12px}.cf-bubble{padding:13px}.cf-photo-card{padding:6px}}
+.cf-top{position:sticky;top:0;z-index:20;margin:0 -14px;padding:12px 14px 10px;background:rgba(11,11,15,.94);backdrop-filter:blur(18px);border-bottom:1px solid #1c1c21}
+.cf-title{font-size:17px;font-weight:700}.cf-sub{font-size:11px;color:var(--muted);margin-top:2px}.cf-hero{text-align:center;padding:24px 8px 16px}.cf-logo{width:46px;height:46px;margin:auto auto 10px;border-radius:15px;display:grid;place-items:center;background:#fff;color:#111;font-size:23px}.cf-hero h1{font-size:26px;margin:0 0 6px;letter-spacing:-.7px}.cf-hero p{font-size:13px;color:var(--muted);margin:0}
+.cf-steps{display:flex;gap:7px;overflow-x:auto;padding:3px 0 12px;scrollbar-width:none}.cf-step{white-space:nowrap;padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:#131318;color:#9e9ea7;font-size:11px}.cf-step.on{color:#fff;border-color:#6048a7;background:#211a34}
+.cf-card{background:var(--surface);border:1px solid #24242a;border-radius:18px;padding:15px;margin:10px 0 14px}.cf-label{font-size:12px;font-weight:700;color:#d0d0d6;margin-bottom:7px}.cf-help{font-size:12px;line-height:1.5;color:var(--muted)}.cf-count{float:right;color:#aa96ff}
+[data-testid="stFileUploaderDropzone"]{min-height:100px;border:1px dashed #41414a;border-radius:17px;background:var(--surface2)}
+[data-testid="stTextArea"] textarea,[data-testid="stTextInput"] input,[data-testid="stSelectbox"] div[data-baseweb="select"]>div{background:var(--surface)!important;color:var(--text)!important;border:1px solid var(--border)!important;border-radius:15px!important}label{color:#c9c9d0!important;font-size:12px!important;font-weight:600!important}.stButton>button,.stDownloadButton>button{min-height:48px;border-radius:15px!important;background:#202027!important;color:#fff!important;border:1px solid #34343c!important;font-weight:700!important}.stButton>button[kind="primary"]{background:#fff!important;color:#111!important;border-color:#fff!important}
+[data-testid="stImage"]{border-radius:16px;overflow:hidden;border:1px solid #292930}.stAlert,.stSuccess,.stWarning{border-radius:15px}.cf-photo{background:var(--surface2);border:1px solid #292930;border-radius:15px;padding:7px}.cf-name{font-size:10px;color:#aaaab3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 2px 1px}.cf-code{background:#101015;border:1px solid #2d2d35;border-radius:14px;padding:12px;font-size:12px;line-height:1.55;white-space:pre-wrap}.cf-footer{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:min(760px,100%);padding:9px 14px 12px;background:linear-gradient(transparent,#0b0b0f 22%);z-index:15;pointer-events:none}.cf-footer div{background:#17171c;border:1px solid #34343c;border-radius:20px;padding:8px 12px;color:#8f8f98;font-size:11px;text-align:center}
+@media(max-width:600px){.block-container{padding:0 12px 105px}.cf-top{margin:0 -12px}.cf-card{padding:13px}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -166,62 +167,86 @@ html,body,[class*="css"]{font-family:Inter,system-ui,sans-serif}.stApp{backgroun
 
 st.markdown(
     """
-<div class="cf-topbar"><div><div class="cf-title">Creator Flow AI</div><div class="cf-subtitle">Foto → Brief → Gambar → Video</div></div><div class="cf-menu">⋯</div></div>
-<div class="cf-welcome"><div class="cf-logo">🎬</div><h1>Creator Flow AI</h1><p>Foto produk menjadi gambar iklan lalu prompt video untuk Google Flow.</p></div>
-<div class="cf-stepbar"><span class="cf-step active">① Foto</span><span class="cf-step">② Brief</span><span class="cf-step">③ Gambar</span><span class="cf-step">④ Pilih</span><span class="cf-step">⑤ Video</span></div>
+<div class="cf-top"><div class="cf-title">Creator Flow AI</div><div class="cf-sub">Foto → Brief → Gambar → Pilih → Video</div></div>
+<div class="cf-hero"><div class="cf-logo">🎬</div><h1>Creator Flow AI</h1><p>Alur sederhana untuk membuat aset iklan dan prompt Google Flow.</p></div>
+<div class="cf-steps"><span class="cf-step on">① Foto</span><span class="cf-step">② Brief</span><span class="cf-step">③ Gambar</span><span class="cf-step">④ Pilih</span><span class="cf-step">⑤ Video</span></div>
 """,
     unsafe_allow_html=True,
 )
 
 with st.expander("⚙️ Pengaturan AI", expanded=False):
     api_key = st.text_input("Google Gemini API Key", type="password")
-    st.caption("API key dipakai hanya saat request Gemini dan tidak ditulis ke source code.")
+    image_mode = st.radio(
+        "Cara membuat gambar",
+        ["Google Flow — prompt dulu (disarankan)", "Gemini Image API — gambar langsung di aplikasi"],
+        index=0,
+    )
+    st.caption("Mode Google Flow tetap memakai Gemini untuk menyusun prompt; gambar final dibuat di Google Flow.")
 
-st.markdown('<div class="cf-bubble"><div class="cf-label">📸 Foto Produk <span class="cf-count">maks. 7</span></div><div class="cf-muted">Upload maksimal 7 foto produk. Gunakan beberapa sudut agar AI lebih akurat menjaga identitas produk.</div></div>', unsafe_allow_html=True)
-product_files = st.file_uploader(
+st.markdown('<div class="cf-card"><div class="cf-label">📸 Foto Produk <span class="cf-count">maks. 7</span></div><div class="cf-help">Tambahkan sampai 7 sudut foto produk. AI memakai foto-foto ini sebagai referensi identitas produk.</div></div>', unsafe_allow_html=True)
+files = st.file_uploader(
     "Tambahkan foto produk",
     type=["png", "jpg", "jpeg", "webp"],
     accept_multiple_files=True,
-    key="product_photos_uploader",
+    key="product_uploader",
     help="Maksimal 7 foto.",
 )
-if product_files:
-    if len(product_files) > MAX_PRODUCT_PHOTOS:
-        st.warning(f"Maksimal {MAX_PRODUCT_PHOTOS} foto. Foto setelah nomor {MAX_PRODUCT_PHOTOS} diabaikan.")
-    save_product_photos(product_files)
+if files:
+    if len(files) > MAX_PRODUCT_PHOTOS:
+        st.warning(f"Maksimal {MAX_PRODUCT_PHOTOS} foto. Foto setelah nomor {MAX_PRODUCT_PHOTOS} tidak digunakan.")
+    save_product_photos(files)
 
 if st.session_state.product_photos:
-    st.caption(f"{len(st.session_state.product_photos)} / {MAX_PRODUCT_PHOTOS} foto produk dipilih")
+    st.caption(f"{len(st.session_state.product_photos)} / {MAX_PRODUCT_PHOTOS} foto produk")
     cols = st.columns(2)
-    for index, photo in enumerate(st.session_state.product_photos):
-        with cols[index % 2]:
-            st.markdown('<div class="cf-photo-card">', unsafe_allow_html=True)
+    for i, photo in enumerate(st.session_state.product_photos):
+        with cols[i % 2]:
+            st.markdown('<div class="cf-photo">', unsafe_allow_html=True)
             st.image(photo["bytes"], use_container_width=True)
-            st.markdown(f'<div class="cf-photo-name">{index + 1}. {photo["name"]}</div></div>', unsafe_allow_html=True)
-    st.success("Foto produk siap menjadi referensi AI.")
+            st.markdown(f'<div class="cf-name">{i + 1}. {photo["name"]}</div></div>', unsafe_allow_html=True)
 else:
     st.info("📷 Tambahkan minimal 1 foto produk untuk memulai.")
 
-st.markdown('<div class="cf-bubble"><div class="cf-label">📝 Brief</div><div class="cf-muted">Jelaskan apa yang ingin dibuat AI dari produk tersebut.</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="cf-card"><div class="cf-label">📝 Brief</div><div class="cf-help">Jelaskan adegan, target, gaya iklan, dan tujuan konten.</div></div>', unsafe_allow_html=True)
 brief = st.text_area(
     "Brief konten",
-    placeholder="Contoh: Buat iklan affiliate sepatu olahraga untuk TikTok. Pria muda memakai sepatu di taman, premium tetapi natural, hook kuat dan CTA cek keranjang kuning.",
-    height=130,
-    key="brief",
+    placeholder="Contoh: Iklan affiliate sepatu olahraga untuk TikTok. Pria muda memakai sepatu di taman, premium tetapi natural, hook kuat dan CTA cek keranjang kuning.",
+    height=125,
+    key="brief_input",
     label_visibility="collapsed",
 )
 
-col1, col2 = st.columns(2)
-with col1:
+c1, c2 = st.columns(2)
+with c1:
     style = st.selectbox("Gaya visual", ["Photorealistic / Cinematic", "Natural UGC / TikTok", "Commercial Product Ad", "Luxury Product Ad", "Anime / Manga", "3D Animation"])
     aspect_ratio = st.selectbox("Aspect ratio", ["9:16 — TikTok / Reels / Shorts", "16:9 — YouTube", "1:1 — Square"])
-with col2:
+with c2:
     camera = st.selectbox("Kamera", ["Natural handheld", "Cinematic wide shot", "Medium shot", "Close-up product", "POV", "Top-down / Bird-eye"])
     lighting = st.selectbox("Lighting", ["Natural daylight", "Golden hour", "Soft studio light", "Moody cinematic", "Neon"])
 
-st.markdown('<div class="cf-bubble"><div class="cf-label">🖼️ Buat Gambar</div><div class="cf-muted">AI menggabungkan brief dengan hingga 7 foto produk. Hasil gambar tampil langsung di aplikasi sebelum diunduh.</div></div>', unsafe_allow_html=True)
+image_prompt = f"""
+Create a production-ready image prompt for Google Flow / Gemini image generation.
+Use the supplied product reference photos as the source of truth. They are different views of the SAME product.
+Preserve exact product identity: shape, proportions, color, material, texture, logo, label, packaging and unique details.
+Do not invent or merge products.
 
-if st.button("🖼️  BUAT GAMBAR DENGAN AI", type="primary", use_container_width=True):
+BRIEF:
+{brief}
+STYLE: {style}
+ASPECT RATIO: {get_ratio(aspect_ratio)}
+CAMERA: {camera}
+LIGHTING: {lighting}
+
+Write one complete English image-generation prompt for a polished social-media commercial.
+Include subject, environment, composition, camera, lighting, product placement, realism, continuity and negative constraints.
+No watermark, random text, extra logo, duplicate product, distorted anatomy or deformed product.
+Return only the final prompt, with no introduction.
+"""
+
+st.markdown('<div class="cf-card"><div class="cf-label">🖼️ Tahap Gambar</div><div class="cf-help">Pilih Google Flow untuk alur aman tanpa error quota gambar. Jika project memiliki quota image, pilih mode Gemini untuk menampilkan gambar langsung di aplikasi.</div></div>', unsafe_allow_html=True)
+
+button_text = "🖼️  BUAT PROMPT GAMBAR UNTUK GOOGLE FLOW" if image_mode.startswith("Google Flow") else "🖼️  BUAT GAMBAR DENGAN GEMINI"
+if st.button(button_text, type="primary", use_container_width=True):
     if not api_key.strip():
         st.error("Masukkan Google Gemini API Key terlebih dahulu.")
     elif not st.session_state.product_photos:
@@ -229,72 +254,77 @@ if st.button("🖼️  BUAT GAMBAR DENGAN AI", type="primary", use_container_wid
     elif not brief.strip():
         st.warning("Brief belum diisi.")
     else:
-        image_prompt = f"""
-Create one polished commercial image using the supplied product reference photos as the source of truth.
-The supplied images are different views of the SAME product. Cross-check them and preserve exact product
-identity: shape, proportions, colors, materials, texture, logo, label, packaging and distinctive details.
-Do not merge different products or invent missing product details.
-
-BRIEF:
-{brief}
-
-STYLE: {style}
-ASPECT RATIO: {get_ratio(aspect_ratio)}
-CAMERA: {camera}
-LIGHTING: {lighting}
-
-Create a believable social-media advertising scene. Keep the product clearly visible, with realistic
-shadows, reflections, anatomy and physically plausible composition. No watermark, random text, extra logos,
-duplicate product, or distorted product details. Product photos are references for identity, not backgrounds.
-"""
         try:
-            with st.spinner("🤖 Gemini sedang membuat gambar dari foto produk..."):
-                result = generate_gemini_image(api_key, image_prompt, st.session_state.product_photos, aspect_ratio)
-            st.session_state.generated_image_bytes = result
-            st.session_state.generated_image_type = "image/png"
-            st.session_state.video_prompt_result = ""
-            st.success("Gambar berhasil dibuat dan sudah tampil di aplikasi.")
+            if image_mode.startswith("Google Flow"):
+                with st.spinner("🤖 Gemini sedang menyusun prompt gambar..."):
+                    st.session_state.image_prompt_result = gemini_text(api_key, image_prompt, st.session_state.product_photos)
+                st.success("Prompt gambar siap. Salin ke Google Flow, buat gambarnya, lalu upload hasil final di bawah.")
+            else:
+                with st.spinner("🤖 Gemini sedang membuat gambar..."):
+                    st.session_state.generated_image_bytes = gemini_image(
+                        api_key,
+                        image_prompt,
+                        st.session_state.product_photos,
+                        aspect_ratio,
+                    )
+                st.session_state.image_prompt_result = ""
+                st.success("Gambar berhasil dibuat dan tampil langsung di aplikasi.")
         except Exception as exc:
-            st.error(f"Gagal membuat gambar: {exc}")
+            st.error(friendly_error(exc, "gambar"))
+
+if st.session_state.image_prompt_result:
+    st.markdown('<div class="cf-card"><div class="cf-label">✨ Prompt Gambar Final</div><div class="cf-help">Gunakan prompt ini di Google Flow. Setelah gambar selesai, upload hasilnya pada tahap berikutnya.</div></div>', unsafe_allow_html=True)
+    st.code(st.session_state.image_prompt_result, language="text")
+    st.download_button(
+        "📥 Simpan Prompt Gambar",
+        data=st.session_state.image_prompt_result,
+        file_name="creator_flow_image_prompt.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
 
 if st.session_state.generated_image_bytes:
-    st.markdown('<div class="cf-bubble"><div class="cf-label">✨ Hasil Gambar AI</div><div class="cf-muted">Periksa hasil terlebih dahulu. Download hanya jika sudah sesuai.</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="cf-card"><div class="cf-label">✨ Hasil Gambar AI</div><div class="cf-help">Periksa dulu. Jika sesuai, pilih untuk tahap video.</div></div>', unsafe_allow_html=True)
     st.image(st.session_state.generated_image_bytes, caption="Hasil gambar AI", use_container_width=True)
     a, b = st.columns(2)
     with a:
-        st.download_button("📥 Simpan Gambar", data=st.session_state.generated_image_bytes, file_name="creator_flow_ai_image.png", mime="image/png", use_container_width=True)
+        st.download_button("📥 Simpan Gambar", data=st.session_state.generated_image_bytes, file_name="creator_flow_image.png", mime="image/png", use_container_width=True)
     with b:
         if st.button("✅ Pilih untuk Video", use_container_width=True):
             st.session_state.selected_image_bytes = st.session_state.generated_image_bytes
-            st.session_state.selected_image_name = "creator_flow_ai_image.png"
-            st.session_state.selected_image_type = st.session_state.generated_image_type
+            st.session_state.selected_image_name = "creator_flow_image.png"
+            st.session_state.selected_image_type = "image/png"
             st.session_state.video_prompt_result = ""
             st.success("Gambar dipilih untuk tahap video.")
 
-st.markdown('<div class="cf-bubble"><div class="cf-label">📤 Gambar Final Google Flow</div><div class="cf-muted">Kalau gambar dibuat di Google Flow, upload hasil final di sini untuk tahap video.</div></div>', unsafe_allow_html=True)
-flow_image = st.file_uploader("Upload gambar final", type=["png", "jpg", "jpeg", "webp"], key="flow_image_uploader", label_visibility="collapsed")
-if flow_image is not None:
-    data = flow_image.getvalue()
+st.markdown('<div class="cf-card"><div class="cf-label">📤 Pilih Gambar Final</div><div class="cf-help">Upload gambar final yang sudah dibuat di Google Flow. Setelah dipilih, tahap video otomatis terbuka.</div></div>', unsafe_allow_html=True)
+final_file = st.file_uploader(
+    "Upload gambar final",
+    type=["png", "jpg", "jpeg", "webp"],
+    key="final_image_uploader",
+    label_visibility="collapsed",
+)
+if final_file is not None:
+    data = final_file.getvalue()
     if data:
-        st.session_state.selected_image_bytes = data
-        st.session_state.selected_image_name = flow_image.name
-        st.session_state.selected_image_type = flow_image.type or "image/png"
-        st.success("Gambar final dipilih sebagai referensi video.")
-
-st.markdown('<div class="cf-bubble"><div class="cf-label">🎬 Video</div><div class="cf-muted">Setelah gambar dipilih, AI menyusun 3 scene untuk Google Flow. Durasi per scene hanya 8 atau 10 detik.</div></div>', unsafe_allow_html=True)
+        changed = data != st.session_state.selected_image_bytes or final_file.name != st.session_state.selected_image_name
+        if changed:
+            st.session_state.selected_image_bytes = data
+            st.session_state.selected_image_name = final_file.name
+            st.session_state.selected_image_type = final_file.type or "image/png"
+            st.session_state.video_prompt_result = ""
+            st.success("Gambar final dipilih. Tahap video siap digunakan.")
 
 if st.session_state.selected_image_bytes:
+    st.markdown('<div class="cf-card"><div class="cf-label">🎬 Tahap Video</div><div class="cf-help">AI akan menyusun tepat 3 scene yang saling tersambung untuk Google Flow. Durasi setiap scene hanya 8 atau 10 detik.</div></div>', unsafe_allow_html=True)
     st.image(st.session_state.selected_image_bytes, caption=st.session_state.selected_image_name or "Gambar terpilih", use_container_width=True)
-    duration = st.selectbox("Durasi setiap scene", ["8 detik", "10 detik"], key="duration_video")
-    voice = st.selectbox("Voice Over", ["Pria dewasa Indonesia, natural", "Wanita dewasa Indonesia, natural", "Tanpa voice over"], key="voice_video")
+    d1, d2 = st.columns(2)
+    with d1:
+        duration = st.selectbox("Durasi per scene", ["8 detik", "10 detik"], key="video_duration")
+    with d2:
+        voice = st.selectbox("Voice Over", ["Pria dewasa Indonesia, natural", "Wanita dewasa Indonesia, natural", "Tanpa voice over"], key="video_voice")
 
-    if st.button("🎬  SUSUN VIDEO DENGAN AI", type="primary", use_container_width=True):
-        if not api_key.strip():
-            st.error("Masukkan Google Gemini API Key terlebih dahulu.")
-        elif not brief.strip():
-            st.warning("Brief belum diisi.")
-        else:
-            video_prompt = f"""
+    video_prompt = f"""
 You are a senior commercial video director and Google Flow / Veo prompt engineer.
 Use the selected reference image as the visual source of truth for the product.
 Preserve product shape, proportions, colors, logo, label, materials, texture and distinctive details.
@@ -312,34 +342,53 @@ Create EXACTLY 3 connected scenes for a social-media product video.
 For each scene provide:
 ### Scene N — title
 **Tujuan:** concise purpose
-**Aksi Visual:** what the person/product does
-**Prompt Video:** complete English Google Flow / Veo-ready prompt with subject, action, camera movement, composition, lighting, continuity and realistic motion
+**Aksi Visual:** what happens
+**Prompt Video:** complete English Google Flow / Veo-ready prompt including subject, action, camera movement, composition, lighting, continuity and realistic motion
 **Voice Over:** Indonesian line if requested
 **SFX / Audio:** concise sound direction
 
 Continuity rules:
 - The selected reference image is the source of truth.
-- Never change the product or add a different product.
+- Never change or duplicate the product.
 - Keep motion physically plausible.
 - No watermark, random text, fake logo, or product deformation.
+Return only the 3-scene production plan.
 """
+
+    if st.button("🎬  SUSUN VIDEO UNTUK GOOGLE FLOW", type="primary", use_container_width=True):
+        if not api_key.strip():
+            st.error("Masukkan Google Gemini API Key terlebih dahulu.")
+        elif not brief.strip():
+            st.warning("Brief belum diisi.")
+        else:
             try:
-                with st.spinner("🤖 AI sedang menyusun 3 scene video..."):
-                    st.session_state.video_prompt_result = generate_gemini_text(
+                with st.spinner("🤖 Gemini sedang menyusun 3 scene video..."):
+                    st.session_state.video_prompt_result = gemini_text(
                         api_key,
                         video_prompt,
-                        st.session_state.selected_image_bytes,
-                        st.session_state.selected_image_type,
+                        [
+                            {
+                                "bytes": st.session_state.selected_image_bytes,
+                                "name": st.session_state.selected_image_name,
+                                "type": st.session_state.selected_image_type,
+                            }
+                        ],
                     )
-                st.success("Prompt video siap digunakan di Google Flow.")
+                st.success("3 scene video siap digunakan di Google Flow.")
             except Exception as exc:
-                st.error(f"Gagal menyusun video: {exc}")
+                st.error(friendly_error(exc, "video"))
 
     if st.session_state.video_prompt_result:
-        st.markdown('<div class="cf-bubble"><div class="cf-label">🎬 Hasil Rencana Video</div><div class="cf-muted">Prompt siap disalin ke Google Flow.</div></div>', unsafe_allow_html=True)
-        st.markdown(st.session_state.video_prompt_result)
-        st.download_button("📥 Simpan Prompt Video", data=st.session_state.video_prompt_result, file_name="creator_flow_video_prompt.txt", mime="text/plain", use_container_width=True)
+        st.markdown('<div class="cf-card"><div class="cf-label">🎬 Hasil Prompt Video</div><div class="cf-help">Salin prompt ini ke Google Flow untuk membuat video final.</div></div>', unsafe_allow_html=True)
+        st.code(st.session_state.video_prompt_result, language="markdown")
+        st.download_button(
+            "📥 Simpan Prompt Video",
+            data=st.session_state.video_prompt_result,
+            file_name="creator_flow_video_prompt.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
 else:
     st.info("Pilih hasil gambar AI atau upload gambar final dari Google Flow untuk membuka tahap video.")
 
-st.markdown('<div class="cf-composer"><div>Creator Flow AI • Foto Produk → Brief → Gambar → Pilih → Video</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="cf-footer"><div>Creator Flow AI • Foto Produk → Brief → Gambar → Pilih → Video</div></div>', unsafe_allow_html=True)
