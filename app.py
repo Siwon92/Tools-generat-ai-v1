@@ -1,6 +1,26 @@
 import streamlit as st
 from google import genai
 
+GEMINI_MODEL = "gemini-3.6-flash"
+
+
+def generate_gemini_text(api_key: str, prompt: str) -> str:
+    """Generate text with the Google Gen AI SDK and a user-provided API key."""
+    client = genai.Client(api_key=api_key.strip())
+    interaction = client.interactions.create(
+        model=GEMINI_MODEL,
+        input=prompt,
+    )
+    generated_text = (interaction.output_text or "").strip()
+
+    if not generated_text:
+        raise RuntimeError(
+            "Gemini tidak mengembalikan teks. Coba lagi dengan input yang lebih jelas."
+        )
+
+    return generated_text
+
+
 st.set_page_config(
     page_title="Creator Flow AI",
     page_icon="🎬",
@@ -171,10 +191,6 @@ if st.button(
     else:
 
         try:
-
-            client = genai.Client(
-                api_key=api_key
-            )
 
             prompt = f"""
 Kamu adalah Creative Director,
@@ -352,23 +368,19 @@ Langsung berikan hasil.
                 "🤖 Creator Flow AI sedang bekerja..."
             ):
 
-                response = client.models.generate_content(
-    model="gemini-3-flash-preview",
-    contents=prompt
-                )
-                )
+                generated_text = generate_gemini_text(api_key, prompt)
 
             st.success(
                 "✅ Berhasil dibuat!"
             )
 
             st.markdown(
-                response.text
+                generated_text
             )
 
             st.download_button(
                 "📥 Download Hasil TXT",
-                data=response.text,
+                data=generated_text,
                 file_name="creator_flow_ai.txt",
                 mime="text/plain",
                 use_container_width=True
