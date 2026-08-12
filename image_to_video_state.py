@@ -18,6 +18,7 @@ def initialize_image_video_state() -> None:
         "selected_image_type": "image/png",
         "generated_image_bytes": None,
         "generated_image_type": "image/png",
+        "generated_video_bytes": None,
         "video_stage": "locked",
         "video_prompt_result": "",
     }
@@ -46,6 +47,7 @@ def save_product_photo(uploaded_file) -> None:
     st.session_state.product_photo_name = uploaded_file.name
     st.session_state.product_photo_type = uploaded_file.type or "image/png"
     st.session_state.generated_image_bytes = None
+    st.session_state.generated_video_bytes = None
     st.session_state.video_prompt_result = ""
     st.session_state.selected_image_bytes = None
     st.session_state.selected_image_name = ""
