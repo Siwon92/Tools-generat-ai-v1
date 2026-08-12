@@ -185,15 +185,16 @@ FORMAT:
         if st.session_state.get("prompt_save_ok"):
             st.success("✅ Prompt tersimpan. Buat gambar tersebut di Google Flow, lalu lanjut ke tahap 2.")
             st.download_button(
-                "📥 Download Prompt Gambar",
+                "📥 Download Prompt Gambar (TXT)",
                 data=st.session_state.selected_image_prompt,
                 file_name="creator_flow_image_prompt.txt",
                 mime="text/plain",
                 use_container_width=True,
             )
+            st.caption("ℹ️ Tombol ini hanya mengunduh teks prompt. Gambar hasil Google Flow diunduh pada tahap 2 setelah di-upload dan dipilih.")
 
 elif production_mode == SELECT_STAGE:
-    st.info("Upload hasil gambar dari Google Flow. Gambar akan disalin ke Session State agar tidak bergantung pada state sementara uploader.")
+    st.info("Upload hasil gambar dari Google Flow. Setelah dipilih, gambar akan langsung ditampilkan di aplikasi dan tersedia untuk di-download.")
     if not st.session_state.selected_image_prompt:
         st.warning("Simpan prompt gambar terlebih dahulu pada tahap 1.")
     else:
@@ -206,14 +207,22 @@ elif production_mode == SELECT_STAGE:
             help="Pilih satu keyframe/gambar utama untuk kontinuitas video.",
         )
         if uploaded is not None:
-            st.image(uploaded, caption="Preview gambar", use_container_width=True)
+            st.image(uploaded, caption="Preview gambar hasil Google Flow", use_container_width=True)
             st.button("⭐ JADIKAN GAMBAR UTAMA", on_click=select_image_callback, use_container_width=True)
 
         if st.session_state.selected_image_bytes:
             st.divider()
             st.subheader("⭐ Gambar Utama")
             st.image(st.session_state.selected_image_bytes, caption=st.session_state.selected_image_name, use_container_width=True)
-            st.success("Gambar utama tersimpan di sesi ini.")
+            st.success("✅ Gambar utama tersimpan dan siap digunakan untuk tahap video.")
+            st.download_button(
+                "📥 DOWNLOAD GAMBAR HASIL",
+                data=st.session_state.selected_image_bytes,
+                file_name=st.session_state.selected_image_name or "creator_flow_image.png",
+                mime=st.session_state.selected_image_type or "image/png",
+                use_container_width=True,
+            )
+            st.caption("Gambar yang di-download adalah file gambar asli yang Anda upload dari Google Flow, bukan teks prompt.")
             c1, c2 = st.columns(2)
             with c1:
                 st.button("🔄 Ganti Gambar Utama", on_click=reset_image_callback, use_container_width=True)
@@ -231,6 +240,13 @@ else:
     else:
         st.subheader("⭐ Referensi Gambar Utama")
         st.image(st.session_state.selected_image_bytes, caption=st.session_state.selected_image_name, use_container_width=True)
+        st.download_button(
+            "📥 DOWNLOAD GAMBAR REFERENSI",
+            data=st.session_state.selected_image_bytes,
+            file_name=st.session_state.selected_image_name or "creator_flow_image.png",
+            mime=st.session_state.selected_image_type or "image/png",
+            use_container_width=True,
+        )
         st.text_area("📝 Prompt Gambar sebagai sumber kontinuitas", value=st.session_state.selected_image_prompt, height=150, disabled=True)
         duration = st.selectbox("Durasi per Scene", ["8 detik", "10 detik"], key="duration_video")
         voice = st.selectbox("Voice Over", ["Pria dewasa Indonesia, natural", "Wanita dewasa Indonesia, natural", "Tanpa voice over"], key="voice_video")
