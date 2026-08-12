@@ -68,7 +68,7 @@ if st.button("🚀 Generate Prompt SEKARANG", type="primary"):
         try:
             # Konfigurasi Gemini API
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-2.5-flash")
+            model = genai.GenerativeModel("gemini-1.5-flash")
 
             with st.spinner("AI sedang merangkai prompt dan storyboard..."):
                 prompt_system = f"""
