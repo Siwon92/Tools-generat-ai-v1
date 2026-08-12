@@ -1,19 +1,23 @@
-"""Helpers for preserving image-to-video state in Streamlit.
-
-Values that must survive widget reruns live in stable, non-widget session-state keys.
-"""
+"""Helpers for preserving Creator Flow state in Streamlit."""
 
 import streamlit as st
 
 
 def initialize_image_video_state() -> None:
     defaults = {
+        "product_photo_bytes": None,
+        "product_photo_name": "",
+        "product_photo_type": "image/png",
+        "brief": "",
+        "output_mode": "Gambar",
         "image_prompts": "",
         "selected_image_prompt": "",
         "image_stage": "prompt",
         "selected_image_name": "",
         "selected_image_bytes": None,
         "selected_image_type": "image/png",
+        "generated_image_bytes": None,
+        "generated_image_type": "image/png",
         "video_stage": "locked",
         "video_prompt_result": "",
     }
@@ -22,8 +26,22 @@ def initialize_image_video_state() -> None:
             st.session_state[key] = value
 
 
+def save_product_photo(uploaded_file) -> None:
+    """Persist the product reference photo outside the uploader widget state."""
+    if uploaded_file is None:
+        return
+    image_bytes = uploaded_file.getvalue()
+    if not image_bytes:
+        return
+    st.session_state.product_photo_bytes = image_bytes
+    st.session_state.product_photo_name = uploaded_file.name
+    st.session_state.product_photo_type = uploaded_file.type or "image/png"
+    st.session_state.generated_image_bytes = None
+    st.session_state.video_prompt_result = ""
+
+
 def save_selected_image(uploaded_file) -> None:
-    """Copy the uploaded image into persistent session state."""
+    """Copy a generated/Google Flow image into persistent session state."""
     if uploaded_file is None:
         return
     image_bytes = uploaded_file.getvalue()
@@ -32,6 +50,16 @@ def save_selected_image(uploaded_file) -> None:
     st.session_state.selected_image_bytes = image_bytes
     st.session_state.selected_image_name = uploaded_file.name
     st.session_state.selected_image_type = uploaded_file.type or "image/png"
+    st.session_state.video_stage = "ready"
+    st.session_state.video_prompt_result = ""
+    st.session_state.image_stage = "selected"
+
+
+def use_generated_image_as_reference(image_bytes: bytes, mime_type: str = "image/png", name: str = "creator_flow_generated.png") -> None:
+    """Promote the AI-generated image to the image-to-video reference slot."""
+    st.session_state.selected_image_bytes = image_bytes
+    st.session_state.selected_image_name = name
+    st.session_state.selected_image_type = mime_type or "image/png"
     st.session_state.video_stage = "ready"
     st.session_state.video_prompt_result = ""
     st.session_state.image_stage = "selected"
@@ -58,8 +86,6 @@ def save_image_prompt() -> bool:
 
 
 def continue_to_video() -> bool:
-    if not st.session_state.get("selected_image_prompt", "").strip():
-        return False
     if not st.session_state.get("selected_image_bytes"):
         return False
     st.session_state.image_stage = "video"
