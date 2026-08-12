@@ -1,3 +1,5 @@
+import base64
+
 import streamlit as st
 from google import genai
 
@@ -6,25 +8,65 @@ from image_to_video_state import (
     continue_to_video,
     initialize_image_video_state,
     save_image_prompt,
+    save_product_photo,
     save_selected_image,
+    use_generated_image_as_reference,
 )
 
-GEMINI_MODEL = "gemini-3.6-flash"
-IMAGE_STAGE = "🖼️ 1. Buat Prompt Gambar"
-SELECT_STAGE = "🖼️ 2. Pilih Gambar Utama"
-VIDEO_STAGE = "🎬 3. Buat Prompt Video"
+GEMINI_TEXT_MODEL = "gemini-3.6-flash"
+GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 
 
-def generate_gemini_text(api_key: str, prompt: str) -> str:
+def generate_gemini_text(
+    api_key: str,
+    prompt: str,
+    image_bytes: bytes | None = None,
+    mime_type: str = "image/png",
+) -> str:
     api_key = api_key.strip()
     if not api_key:
         raise ValueError("API key Gemini belum diisi.")
+
     client = genai.Client(api_key=api_key)
-    interaction = client.interactions.create(model=GEMINI_MODEL, input=prompt)
+    if image_bytes:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        input_data = [
+            {"type": "text", "text": prompt},
+            {"type": "image", "data": image_b64, "mime_type": mime_type or "image/png"},
+        ]
+    else:
+        input_data = prompt
+
+    interaction = client.interactions.create(model=GEMINI_TEXT_MODEL, input=input_data)
     text = (interaction.output_text or "").strip()
     if not text:
-        raise RuntimeError("Gemini tidak mengembalikan teks. Coba lagi dengan input yang lebih jelas.")
+        raise RuntimeError("Gemini tidak mengembalikan teks. Coba lagi dengan brief yang lebih jelas.")
     return text
+
+
+def generate_gemini_image(
+    api_key: str,
+    prompt: str,
+    product_photo: bytes,
+    mime_type: str,
+) -> bytes:
+    api_key = api_key.strip()
+    if not api_key:
+        raise ValueError("API key Gemini belum diisi.")
+
+    client = genai.Client(api_key=api_key)
+    image_b64 = base64.b64encode(product_photo).decode("utf-8")
+    interaction = client.interactions.create(
+        model=GEMINI_IMAGE_MODEL,
+        input=[
+            {"type": "text", "text": prompt},
+            {"type": "image", "data": image_b64, "mime_type": mime_type or "image/png"},
+        ],
+    )
+    generated = getattr(interaction, "output_image", None)
+    if not generated or not getattr(generated, "data", None):
+        raise RuntimeError("Gemini tidak mengembalikan gambar. Coba lagi dengan brief yang lebih jelas.")
+    return base64.b64decode(generated.data)
 
 
 def save_prompt_callback() -> None:
@@ -47,37 +89,78 @@ st.set_page_config(page_title="Creator Flow AI", page_icon="🎬", layout="cente
 initialize_image_video_state()
 
 st.title("🎬 Creator Flow AI")
-st.caption("Image → Select → Video workflow untuk Google Flow")
+st.caption("Foto Produk → Brief → AI → Gambar / Video")
 
 with st.sidebar:
-    st.header("⚙️ Pengaturan")
+    st.header("⚙️ Pengaturan AI")
     api_key = st.text_input("Google Gemini API Key", type="password")
     st.info("API key hanya digunakan saat request dan tidak ditulis ke source code.")
 
-st.subheader("1. Produk / Subjek")
-subject = st.text_area(
-    "Deskripsikan produk atau subjek",
-    placeholder="Contoh: sepatu olahraga pria warna hitam, desain casual, nyaman digunakan untuk olahraga.",
-    height=100,
-    key="subject",
+# -----------------------------------------------------------------------------
+# 1. PRODUCT PHOTO
+# -----------------------------------------------------------------------------
+st.header("1. 📸 Foto Produk")
+st.write("Upload foto produk terlebih dahulu. Foto ini menjadi referensi utama agar AI menjaga bentuk, warna, logo, label, dan detail produk.")
+
+product_photo = st.file_uploader(
+    "Upload foto produk",
+    type=["png", "jpg", "jpeg", "webp"],
+    accept_multiple_files=False,
+    key="product_photo_uploader",
+    help="Gunakan foto produk yang jelas dan tidak buram.",
+)
+if product_photo is not None:
+    save_product_photo(product_photo)
+
+if st.session_state.product_photo_bytes:
+    st.image(
+        st.session_state.product_photo_bytes,
+        caption=f"Foto produk: {st.session_state.product_photo_name}",
+        use_container_width=True,
+    )
+    st.success("✅ Foto produk sudah menjadi referensi AI.")
+else:
+    st.warning("Upload foto produk sebelum menjalankan AI.")
+
+# -----------------------------------------------------------------------------
+# 2. BRIEF
+# -----------------------------------------------------------------------------
+st.header("2. 📝 Brief")
+st.write("Tulis brief singkat. Tidak perlu membuat prompt teknis — AI yang menyusun prompt berdasarkan foto produk dan brief Anda.")
+
+brief = st.text_area(
+    "Brief kampanye / kebutuhan konten",
+    placeholder=(
+        "Contoh: Buat konten affiliate sepatu olahraga untuk TikTok. Tampilkan produk dipakai pria muda di taman, "
+        "terlihat premium tetapi natural, ada hook di awal dan CTA untuk cek keranjang kuning."
+    ),
+    height=150,
+    key="brief",
 )
 
-st.subheader("2. Gaya Visual")
 col1, col2 = st.columns(2)
 with col1:
     style = st.selectbox(
-        "Style",
-        ["Photorealistic / Cinematic", "Natural UGC / TikTok", "Commercial Product Ad", "Anime / Manga", "3D Animation", "Cyberpunk", "Vintage Film"],
+        "Gaya visual",
+        [
+            "Photorealistic / Cinematic",
+            "Natural UGC / TikTok",
+            "Commercial Product Ad",
+            "Luxury Product Ad",
+            "Anime / Manga",
+            "3D Animation",
+            "Vintage Film",
+        ],
         key="style",
     )
     aspect_ratio = st.selectbox(
-        "Aspect Ratio",
+        "Aspect ratio",
         ["9:16 — TikTok / Reels / Shorts", "16:9 — YouTube", "1:1 — Square"],
         key="aspect_ratio",
     )
 with col2:
     camera = st.selectbox(
-        "Camera",
+        "Kamera",
         ["Natural handheld", "Cinematic wide shot", "Medium shot", "Close-up product", "POV", "Top-down / Bird-eye"],
         key="camera",
     )
@@ -87,245 +170,184 @@ with col2:
         key="lighting",
     )
 
-st.subheader("3. Pipeline Produksi")
-production_mode = st.radio(
-    "Pilih tahap",
-    [IMAGE_STAGE, SELECT_STAGE, VIDEO_STAGE],
-    key="production_mode",
+# -----------------------------------------------------------------------------
+# 3. CHOOSE OUTPUT
+# -----------------------------------------------------------------------------
+st.header("3. 🤖 Pilih Hasil AI")
+output_mode = st.radio(
+    "AI mau membuat apa?",
+    ["Gambar", "Video"],
+    horizontal=True,
+    key="output_mode",
 )
 
-st.subheader("4. Jenis Konten")
-content_type = st.selectbox(
-    "Jenis konten",
-    ["TikTok Affiliate — 3 Scene", "Storyboard — 3 sampai 5 Scene", "Prompt Video", "Ide Konten + Hook"],
-    key="content_type",
-)
-story = st.text_area(
-    "5. Ide / Informasi Produk / Alur",
-    placeholder="Contoh: creator memakai sepatu, menunjukkan detail produk, lalu mengajak penonton cek keranjang kuning.",
-    height=120,
-    key="story",
-)
+if output_mode == "Gambar":
+    st.info("AI akan membaca foto produk + brief, lalu membuat gambar iklan baru dengan produk tetap konsisten.")
 
-if production_mode == IMAGE_STAGE:
-    st.info("Buat 3 prompt gambar, pilih/edit satu, lalu simpan sebelum membuat gambar di Google Flow.")
-    image_scene = st.text_area(
-        "Adegan gambar",
-        placeholder="Contoh: creator pria Indonesia sedang memakai sepatu di ruang tamu modern.",
-        height=100,
-        key="image_scene",
-    )
-
-    if st.button("🖼️ GENERATE 3 PROMPT GAMBAR", type="primary", use_container_width=True):
-        if not api_key:
+    if st.button("🖼️ AI BUAT GAMBAR", type="primary", use_container_width=True):
+        if not api_key.strip():
             st.error("Masukkan Google Gemini API Key terlebih dahulu.")
-        elif not subject.strip():
-            st.warning("Deskripsi produk belum diisi.")
-        elif not image_scene.strip():
-            st.warning("Adegan gambar belum diisi.")
+        elif not st.session_state.product_photo_bytes:
+            st.warning("Upload foto produk terlebih dahulu.")
+        elif not brief.strip():
+            st.warning("Brief belum diisi.")
         else:
-            request = f"""
-You are a professional Visual Director and Prompt Engineer for Google Flow.
-Create EXACTLY 3 copy-paste-ready image prompts in English.
+            image_prompt = f"""
+Create a professional commercial image using the provided product photo as the primary product reference.
+The product identity must remain faithful to the reference: preserve its exact shape, proportions, colors,
+materials, texture, logo, label, packaging and distinctive details. Do not invent or replace the product.
 
-PRODUCT/SUBJECT:
-{subject}
-SCENE:
-{image_scene}
-STYLE:
-{style}
-ASPECT RATIO:
-{aspect_ratio}
-CAMERA:
-{camera}
-LIGHTING:
-{lighting}
-CONTENT IDEA:
-{story}
+BRIEF:
+{brief}
 
-RULES:
-- Preserve product identity exactly: shape, color, logo, label, texture, material and details.
-- If a person appears, use natural appearance and realistic anatomy.
-- Keep the product clear and prominent.
-- Avoid random text, watermarks, extra logos, malformed hands/fingers, distortion and AI artifacts.
-- Use English only for the prompts.
-- Make the three variations different mainly in framing/composition while keeping identity consistent.
+VISUAL STYLE: {style}
+ASPECT RATIO: {aspect_ratio}
+CAMERA: {camera}
+LIGHTING: {lighting}
 
-FORMAT:
-### IMAGE PROMPT 1
-[complete English prompt]
-### IMAGE PROMPT 2
-[complete English prompt]
-### IMAGE PROMPT 3
-[complete English prompt]
+Create a polished, realistic scene suitable for social-media advertising. Make the product clearly visible and
+use natural composition, realistic shadows, believable hands/body anatomy if a person appears, and clean visual
+hierarchy. No watermark, no random text, no extra logos, no distorted product details.
 """
             try:
-                with st.spinner("🖼️ Gemini sedang menyusun 3 prompt gambar..."):
-                    st.session_state.image_prompts = generate_gemini_text(api_key, request)
-                st.session_state.selected_image_prompt = ""
-                st.session_state.image_prompt_editor = ""
-                st.session_state.video_prompt_result = ""
-                clear_selected_image()
-                st.session_state.image_stage = "prompt"
-                st.success("✅ 3 prompt gambar berhasil dibuat.")
+                with st.spinner("🤖 AI sedang membuat gambar dari foto produk + brief..."):
+                    generated = generate_gemini_image(
+                        api_key,
+                        image_prompt,
+                        st.session_state.product_photo_bytes,
+                        st.session_state.product_photo_type,
+                    )
+                st.session_state.generated_image_bytes = generated
+                st.session_state.generated_image_type = "image/png"
+                st.success("✅ Gambar berhasil dibuat oleh AI.")
             except Exception as exc:
-                st.error(f"Terjadi kesalahan Gemini: {exc}")
+                st.error(f"Gagal membuat gambar: {exc}")
 
-    if st.session_state.image_prompts:
+    if st.session_state.generated_image_bytes:
         st.divider()
-        st.subheader("🖼️ Hasil Prompt Gambar")
-        st.markdown(st.session_state.image_prompts)
-        st.text_area(
-            "Prompt gambar terpilih / hasil revisi",
-            key="image_prompt_editor",
-            placeholder="Salin prompt terbaik dari hasil di atas, lalu edit jika diperlukan.",
-            height=200,
-        )
-        st.button("💾 SIMPAN PROMPT TERPILIH", on_click=save_prompt_callback, use_container_width=True)
-        if st.session_state.get("prompt_save_ok"):
-            st.success("✅ Prompt tersimpan. Buat gambar tersebut di Google Flow, lalu lanjut ke tahap 2.")
-            st.download_button(
-                "📥 Download Prompt Gambar (TXT)",
-                data=st.session_state.selected_image_prompt,
-                file_name="creator_flow_image_prompt.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
-            st.caption("ℹ️ Tombol ini hanya mengunduh teks prompt. Gambar hasil Google Flow diunduh pada tahap 2 setelah di-upload dan dipilih.")
-
-elif production_mode == SELECT_STAGE:
-    st.info("Upload hasil gambar dari Google Flow. Setelah dipilih, gambar akan langsung ditampilkan di aplikasi dan tersedia untuk di-download.")
-    if not st.session_state.selected_image_prompt:
-        st.warning("Simpan prompt gambar terlebih dahulu pada tahap 1.")
-    else:
-        st.text_area("📝 Prompt Gambar Terpilih", value=st.session_state.selected_image_prompt, height=160, disabled=True)
-        uploaded = st.file_uploader(
-            "Upload gambar hasil Google Flow",
-            type=["png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=False,
-            key="image_uploader",
-            help="Pilih satu keyframe/gambar utama untuk kontinuitas video.",
-        )
-        if uploaded is not None:
-            st.image(uploaded, caption="Preview gambar hasil Google Flow", use_container_width=True)
-            st.button("⭐ JADIKAN GAMBAR UTAMA", on_click=select_image_callback, use_container_width=True)
-
-        if st.session_state.selected_image_bytes:
-            st.divider()
-            st.subheader("⭐ Gambar Utama")
-            st.image(st.session_state.selected_image_bytes, caption=st.session_state.selected_image_name, use_container_width=True)
-            st.success("✅ Gambar utama tersimpan dan siap digunakan untuk tahap video.")
-            st.download_button(
-                "📥 DOWNLOAD GAMBAR HASIL",
-                data=st.session_state.selected_image_bytes,
-                file_name=st.session_state.selected_image_name or "creator_flow_image.png",
-                mime=st.session_state.selected_image_type or "image/png",
-                use_container_width=True,
-            )
-            st.caption("Gambar yang di-download adalah file gambar asli yang Anda upload dari Google Flow, bukan teks prompt.")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.button("🔄 Ganti Gambar Utama", on_click=reset_image_callback, use_container_width=True)
-            with c2:
-                st.button("➡️ LANJUT KE VIDEO", on_click=go_video_callback, type="primary", use_container_width=True)
-            if st.session_state.get("video_ready_ok"):
-                st.success("✅ Gambar utama siap. Buka tahap 3 untuk membuat prompt video.")
-
-else:
-    st.info("Tahap video membutuhkan prompt gambar tersimpan dan satu gambar utama hasil Google Flow.")
-    if not st.session_state.selected_image_prompt:
-        st.warning("Belum ada prompt gambar terpilih. Kembali ke tahap 1.")
-    elif not st.session_state.selected_image_bytes:
-        st.warning("Belum ada gambar utama. Kembali ke tahap 2 dan upload hasil Google Flow.")
-    else:
-        st.subheader("⭐ Referensi Gambar Utama")
-        st.image(st.session_state.selected_image_bytes, caption=st.session_state.selected_image_name, use_container_width=True)
+        st.subheader("🖼️ Hasil Gambar AI")
+        st.image(st.session_state.generated_image_bytes, caption="Hasil gambar AI", use_container_width=True)
         st.download_button(
-            "📥 DOWNLOAD GAMBAR REFERENSI",
-            data=st.session_state.selected_image_bytes,
-            file_name=st.session_state.selected_image_name or "creator_flow_image.png",
-            mime=st.session_state.selected_image_type or "image/png",
+            "📥 DOWNLOAD GAMBAR HASIL",
+            data=st.session_state.generated_image_bytes,
+            file_name="creator_flow_ai_image.png",
+            mime="image/png",
             use_container_width=True,
         )
-        st.text_area("📝 Prompt Gambar sebagai sumber kontinuitas", value=st.session_state.selected_image_prompt, height=150, disabled=True)
-        duration = st.selectbox("Durasi per Scene", ["8 detik", "10 detik"], key="duration_video")
-        voice = st.selectbox("Voice Over", ["Pria dewasa Indonesia, natural", "Wanita dewasa Indonesia, natural", "Tanpa voice over"], key="voice_video")
 
-        if st.button("🎬 GENERATE PROMPT VIDEO", type="primary", use_container_width=True):
-            prompt = f"""
-You are a Creative Director and Prompt Engineer for generative video.
-Create video prompts that preserve continuity from the selected main image.
+        if st.button("➡️ GUNAKAN GAMBAR INI UNTUK VIDEO", type="secondary", use_container_width=True):
+            use_generated_image_as_reference(
+                st.session_state.generated_image_bytes,
+                st.session_state.generated_image_type,
+                "creator_flow_ai_image.png",
+            )
+            st.success("✅ Gambar AI dijadikan gambar utama untuk tahap video.")
 
-PRODUCT/SUBJECT:
-{subject}
-MAIN IMAGE PROMPT:
-{st.session_state.selected_image_prompt}
-CONTENT TYPE:
-{content_type}
-IDE/STORY:
-{story}
-STYLE:
-{style}
-ASPECT RATIO:
-{aspect_ratio}
-CAMERA:
-{camera}
-LIGHTING:
-{lighting}
-DURATION PER SCENE:
-{duration}
-VOICE OVER:
-{voice}
+else:
+    st.info("AI akan membaca foto produk + brief dan menyusun prompt video siap dipakai di Google Flow. Foto produk tetap menjadi referensi kontinuitas.")
 
-CONTINUITY RULES:
-1. Preserve the product, character, face, clothing, location, colors, materials, lighting and visual identity from the main image.
-2. Never introduce a different product or alter the product shape, color or logo.
-3. Motion must be natural, physically plausible and realistic.
-4. Camera movement must be clear and controlled.
-5. Video prompts must be written in English; voice-over must be Indonesian.
-6. For TikTok Affiliate — 3 Scene, create EXACTLY 3 scenes: HOOK → PROBLEM/PROOF → BENEFIT/CTA.
-7. Each scene must reference continuity from the keyframe and provide an ending state suitable for the next scene.
+    duration = st.selectbox("Durasi per scene", ["8 detik", "10 detik"], key="duration_video")
+    voice = st.selectbox(
+        "Voice Over",
+        ["Pria dewasa Indonesia, natural", "Wanita dewasa Indonesia, natural", "Tanpa voice over"],
+        key="voice_video",
+    )
 
-FORMAT:
-### Scene 1
+    if st.button("🎬 AI SUSUN VIDEO", type="primary", use_container_width=True):
+        if not api_key.strip():
+            st.error("Masukkan Google Gemini API Key terlebih dahulu.")
+        elif not st.session_state.product_photo_bytes:
+            st.warning("Upload foto produk terlebih dahulu.")
+        elif not brief.strip():
+            st.warning("Brief belum diisi.")
+        else:
+            video_prompt = f"""
+You are a senior commercial video director and prompt engineer for Google Flow / Veo.
+Analyze the provided product photo and create a production-ready image-to-video plan.
+The product must remain exactly consistent with the reference image: shape, color, logo, label, materials,
+texture and distinctive details must not change.
+
+BRIEF:
+{brief}
+STYLE: {style}
+ASPECT RATIO: {aspect_ratio}
+CAMERA: {camera}
+LIGHTING: {lighting}
+DURATION PER SCENE: {duration}
+VOICE OVER: {voice}
+
+Create EXACTLY 3 scenes with the structure:
+### Scene 1 — HOOK
 **Tujuan:** ...
 **Aksi Visual:** ...
-**Prompt Video:** [complete English prompt]
-**Voice Over:** ...
+**Prompt Video:** complete English prompt for Google Flow
+**Voice Over:** Indonesian voice-over if requested
 **SFX / Audio:** ...
 
-### Scene 2
+### Scene 2 — DEMONSTRATION / PROOF
 **Tujuan:** ...
 **Aksi Visual:** ...
-**Prompt Video:** [complete English prompt]
-**Voice Over:** ...
+**Prompt Video:** complete English prompt for Google Flow
+**Voice Over:** Indonesian voice-over if requested
 **SFX / Audio:** ...
 
-### Scene 3
+### Scene 3 — BENEFIT / CTA
 **Tujuan:** ...
 **Aksi Visual:** ...
-**Prompt Video:** [complete English prompt]
-**Voice Over:** ...
+**Prompt Video:** complete English prompt for Google Flow
+**Voice Over:** Indonesian voice-over if requested
 **SFX / Audio:** ...
+
+Rules:
+- Preserve product identity and continuity in every scene.
+- Motion must be realistic and physically plausible.
+- Use clear camera movement and natural lighting.
+- Do not add random text, watermarks, extra logos or a different product.
+- Prompts must be English; voice-over must be Indonesian.
 """
             try:
-                with st.spinner("🎬 Gemini sedang menyusun prompt video..."):
-                    st.session_state.video_prompt_result = generate_gemini_text(api_key, prompt)
-                st.success("✅ Prompt video siap digunakan di Google Flow.")
+                with st.spinner("🤖 AI sedang membaca foto produk dan menyusun video..."):
+                    st.session_state.video_prompt_result = generate_gemini_text(
+                        api_key,
+                        video_prompt,
+                        st.session_state.product_photo_bytes,
+                        st.session_state.product_photo_type,
+                    )
+                st.success("✅ Rencana video siap. Gunakan prompt ini di Google Flow untuk merender videonya.")
             except Exception as exc:
-                st.error(f"Terjadi kesalahan Gemini: {exc}")
+                st.error(f"Gagal menyusun video: {exc}")
 
-        if st.session_state.video_prompt_result:
-            st.divider()
-            st.subheader("🎬 Hasil Prompt Video")
-            st.markdown(st.session_state.video_prompt_result)
-            st.download_button(
-                "📥 Download Prompt Video",
-                data=st.session_state.video_prompt_result,
-                file_name="creator_flow_video_prompt.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
+    if st.session_state.video_prompt_result:
+        st.divider()
+        st.subheader("🎬 Hasil Video AI")
+        st.markdown(st.session_state.video_prompt_result)
+        st.download_button(
+            "📥 DOWNLOAD PROMPT VIDEO (TXT)",
+            data=st.session_state.video_prompt_result,
+            file_name="creator_flow_video_prompt.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+# -----------------------------------------------------------------------------
+# Optional image-to-video reference handoff
+# -----------------------------------------------------------------------------
+if st.session_state.selected_image_bytes:
+    st.divider()
+    st.header("4. 🎞️ Gambar Utama untuk Video")
+    st.image(
+        st.session_state.selected_image_bytes,
+        caption=st.session_state.selected_image_name,
+        use_container_width=True,
+    )
+    st.success("✅ Gambar utama siap dipakai sebagai keyframe/referensi video.")
+    st.download_button(
+        "📥 DOWNLOAD GAMBAR UTAMA",
+        data=st.session_state.selected_image_bytes,
+        file_name=st.session_state.selected_image_name or "creator_flow_image.png",
+        mime=st.session_state.selected_image_type or "image/png",
+        use_container_width=True,
+    )
 
 st.divider()
-st.caption("Creator Flow AI • Image → Select → Video • Gemini 3.6 Flash")
+st.caption("Creator Flow AI • Foto Produk → Brief → AI → Gambar / Video • Gemini 3.6 Flash")
