@@ -27,17 +27,30 @@ def initialize_image_video_state() -> None:
 
 
 def save_product_photo(uploaded_file) -> None:
-    """Persist the product reference photo outside the uploader widget state."""
+    """Persist a new product reference photo outside the uploader widget state."""
     if uploaded_file is None:
         return
     image_bytes = uploaded_file.getvalue()
     if not image_bytes:
         return
+
+    is_new_photo = (
+        image_bytes != st.session_state.get("product_photo_bytes")
+        or uploaded_file.name != st.session_state.get("product_photo_name", "")
+        or (uploaded_file.type or "image/png") != st.session_state.get("product_photo_type", "image/png")
+    )
+    if not is_new_photo:
+        return
+
     st.session_state.product_photo_bytes = image_bytes
     st.session_state.product_photo_name = uploaded_file.name
     st.session_state.product_photo_type = uploaded_file.type or "image/png"
     st.session_state.generated_image_bytes = None
     st.session_state.video_prompt_result = ""
+    st.session_state.selected_image_bytes = None
+    st.session_state.selected_image_name = ""
+    st.session_state.selected_image_type = "image/png"
+    st.session_state.video_stage = "locked"
 
 
 def save_selected_image(uploaded_file) -> None:
@@ -55,7 +68,11 @@ def save_selected_image(uploaded_file) -> None:
     st.session_state.image_stage = "selected"
 
 
-def use_generated_image_as_reference(image_bytes: bytes, mime_type: str = "image/png", name: str = "creator_flow_generated.png") -> None:
+def use_generated_image_as_reference(
+    image_bytes: bytes,
+    mime_type: str = "image/png",
+    name: str = "creator_flow_generated.png",
+) -> None:
     """Promote the AI-generated image to the image-to-video reference slot."""
     st.session_state.selected_image_bytes = image_bytes
     st.session_state.selected_image_name = name
