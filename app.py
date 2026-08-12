@@ -1,7 +1,7 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
 
-# --- CONFIGURASI HALAMAN ---
+# --- KONFIGURASI HALAMAN ---
 st.set_page_config(
     page_title="Storyboard & Prompt AI Generator",
     page_icon="🎬",
@@ -15,7 +15,7 @@ st.caption("Buat Prompt Gambar, Video, dan Storyboard Terstruktur Secara Otomati
 with st.sidebar:
     st.header("⚙️ Pengaturan API")
     api_key = st.text_input("Masukkan Google Gemini API Key:", type="password")
-    st.info("Dapatkan API Key gratis di Google AI Studio.")
+    st.info("Dapatkan API Key di Google AI Studio.")
 
 # --- FORM INPUT ---
 st.subheader("1. Karakter & Subjek Utama")
@@ -25,7 +25,7 @@ character_desc = st.text_area(
 )
 
 st.subheader("2. Konsep & Gaya Visual")
-col1, col2 = st.col1, col2 = st.columns(2)
+col1, col2 = st.columns(2)
 
 with col1:
     style_option = st.selectbox(
@@ -66,9 +66,8 @@ if st.button("🚀 Generate Prompt SEKARANG", type="primary"):
         st.warning("Harap lengkapi deskripsi karakter dan ide cerita!")
     else:
         try:
-            # Konfigurasi Gemini API
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-pro")
+            # Menggunakan Google GenAI SDK Terbaru
+            client = genai.Client(api_key=api_key)
 
             with st.spinner("AI sedang merangkai prompt dan storyboard..."):
                 prompt_system = f"""
@@ -82,6 +81,28 @@ if st.button("🚀 Generate Prompt SEKARANG", type="primary"):
                 - Camera Shot: {camera_shot}
                 - Lighting: {lighting}
                 - Ide/Skenario: {story_concept}
+                - Format Output yang Diminta: {output_type}
+
+                INSTRUKSI OUTPUT:
+                Berikan respon dalam Bahasa Indonesia yang rapi dengan format Markdown:
+                1. Jika output_type = 'Storyboard Lengkap', pecah ide cerita menjadi 3-5 urutan scene (Shot 1, Shot 2, dst). Untuk setiap scene sertakan:
+                   - Deskripsi Adegan (Bahasa Indonesia)
+                   - Prompt Gambar (Bahasa Inggris untuk Midjourney/Leonardo)
+                   - Prompt Motion Video (Bahasa Inggris untuk Runway/Luma)
+                2. Jika output_type = 'Prompt Gambar Tunggal', buatkan 3 variasi prompt bahasa Inggris tingkat tinggi (lengkap dengan parameter lighting, camera, style, dan aspect ratio).
+                3. Jika output_type = 'Prompt Video Motion', buatkan prompt bahasa Inggris fokus pada pergerakan kamera, pergerakan objek, dan transisi fisik adegan.
+                """
+
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt_system,
+                )
+                
+                st.success("✅ Berhasil Dihasilkan!")
+                st.markdown(response.text)
+
+        except Exception as e:
+            st.error(f"Terjadi kesalahan: {e}")
                 - Format Output yang Diminta: {output_type}
 
                 INSTRUKSI OUTPUT:
