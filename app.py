@@ -4,14 +4,68 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
-from image_to_video_state import (
-    initialize_image_video_state,
-    save_product_photo,
-    use_generated_image_as_reference,
-)
-
 GEMINI_TEXT_MODEL = "gemini-3.6-flash"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
+
+
+def initialize_image_video_state() -> None:
+    defaults = {
+        "product_photo_bytes": None,
+        "product_photo_name": "",
+        "product_photo_type": "image/png",
+        "brief": "",
+        "output_mode": "Gambar",
+        "image_prompts": "",
+        "selected_image_prompt": "",
+        "image_stage": "prompt",
+        "selected_image_name": "",
+        "selected_image_bytes": None,
+        "selected_image_type": "image/png",
+        "generated_image_bytes": None,
+        "generated_image_type": "image/png",
+        "generated_video_bytes": None,
+        "video_stage": "locked",
+        "video_prompt_result": "",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def save_product_photo(uploaded_file) -> None:
+    if uploaded_file is None:
+        return
+    image_bytes = uploaded_file.getvalue()
+    if not image_bytes:
+        return
+
+    is_new_photo = (
+        image_bytes != st.session_state.get("product_photo_bytes")
+        or uploaded_file.name != st.session_state.get("product_photo_name", "")
+        or (uploaded_file.type or "image/png") != st.session_state.get("product_photo_type", "image/png")
+    )
+    if not is_new_photo:
+        return
+
+    st.session_state.product_photo_bytes = image_bytes
+    st.session_state.product_photo_name = uploaded_file.name
+    st.session_state.product_photo_type = uploaded_file.type or "image/png"
+    st.session_state.generated_image_bytes = None
+    st.session_state.generated_video_bytes = None
+    st.session_state.video_prompt_result = ""
+    st.session_state.selected_image_bytes = None
+    st.session_state.selected_image_name = ""
+    st.session_state.selected_image_type = "image/png"
+    st.session_state.video_stage = "locked"
+
+
+def use_generated_image_as_reference(image_bytes: bytes, mime_type: str = "image/png", name: str = "creator_flow_generated.png") -> None:
+    st.session_state.selected_image_bytes = image_bytes
+    st.session_state.selected_image_name = name
+    st.session_state.selected_image_type = mime_type or "image/png"
+    st.session_state.video_stage = "ready"
+    st.session_state.video_prompt_result = ""
+    st.session_state.image_stage = "selected"
 
 
 def generate_gemini_text(api_key: str, prompt: str, image_bytes: bytes | None = None, mime_type: str = "image/png") -> str:
@@ -40,7 +94,6 @@ def generate_gemini_text(api_key: str, prompt: str, image_bytes: bytes | None = 
 
 
 def generate_gemini_image(api_key: str, prompt: str, product_photo: bytes, mime_type: str, aspect_ratio: str) -> bytes:
-    """Generate a real image with Gemini's image-generation model."""
     api_key = api_key.strip()
     if not api_key:
         raise ValueError("API key Gemini belum diisi.")
@@ -71,15 +124,6 @@ def generate_gemini_image(api_key: str, prompt: str, product_photo: bytes, mime_
     raise RuntimeError("Gemini tidak mengembalikan file gambar. Coba lagi dengan foto/brief yang lebih jelas.")
 
 
-def reset_generated_state() -> None:
-    st.session_state.generated_image_bytes = None
-    st.session_state.generated_image_type = "image/png"
-    st.session_state.video_prompt_result = ""
-    st.session_state.selected_image_bytes = None
-    st.session_state.selected_image_name = ""
-    st.session_state.video_stage = "locked"
-
-
 st.set_page_config(page_title="Creator Flow AI", page_icon="🎬", layout="centered")
 initialize_image_video_state()
 
@@ -91,7 +135,6 @@ with st.sidebar:
     api_key = st.text_input("Google Gemini API Key", type="password")
     st.info("API key hanya digunakan untuk request dan tidak ditulis ke source code.")
 
-# 1. PRODUCT PHOTO
 st.header("1. 📸 Foto Produk")
 st.write("Upload foto produk terlebih dahulu. Foto ini menjadi referensi utama agar identitas produk tetap konsisten.")
 product_photo = st.file_uploader(
@@ -110,7 +153,6 @@ if st.session_state.product_photo_bytes:
 else:
     st.warning("Upload foto produk untuk mulai.")
 
-# 2. BRIEF
 st.header("2. 📝 Brief")
 brief = st.text_area(
     "Apa yang ingin dibuat?",
@@ -127,7 +169,6 @@ with col2:
     camera = st.selectbox("Kamera", ["Natural handheld", "Cinematic wide shot", "Medium shot", "Close-up product", "POV", "Top-down / Bird-eye"], key="camera")
     lighting = st.selectbox("Lighting", ["Natural daylight", "Golden hour", "Soft studio light", "Moody cinematic", "Neon"], key="lighting")
 
-# 3. IMAGE CREATION
 st.header("3. 🖼️ Buat Gambar")
 st.info("AI akan memakai foto produk + brief. Hasil gambar ditampilkan langsung di aplikasi, bukan hanya sebagai prompt.")
 
@@ -190,7 +231,6 @@ if st.session_state.generated_image_bytes:
         )
         st.success("✅ Gambar dipilih. Sekarang lanjut ke tahap video.")
 
-# Optional: upload an image made in Google Flow
 st.subheader("📤 Atau pilih gambar dari Google Flow")
 flow_image = st.file_uploader(
     "Upload gambar final yang ingin dijadikan referensi video",
@@ -205,7 +245,6 @@ if flow_image is not None:
     st.session_state.video_stage = "ready"
     st.success("✅ Gambar dari Google Flow sudah dipilih sebagai referensi video.")
 
-# 4. VIDEO
 st.header("4. 🎬 Video")
 if st.session_state.selected_image_bytes:
     st.image(st.session_state.selected_image_bytes, caption="Gambar terpilih untuk video", use_container_width=True)
